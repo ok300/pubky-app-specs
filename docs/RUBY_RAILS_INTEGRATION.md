@@ -62,15 +62,15 @@ module PubkySpecs
       @store ||= Wasmer::Store.new
     end
 
-    def module
-      @module ||= begin
+    def wasm_module
+      @wasm_module ||= begin
         wasm_path = Rails.root.join('lib', 'wasm', 'pubky_app_specs_bg.wasm')
         Wasmer::Module.new(store, File.read(wasm_path, mode: 'rb'))
       end
     end
 
     def instance
-      @instance ||= Wasmer::Instance.new(self.module, nil)
+      @instance ||= Wasmer::Instance.new(wasm_module, nil)
     end
   end
 end
@@ -273,7 +273,7 @@ end
 module PubkyAppSpecs
   module Models
     class Post
-      include IdGenerators
+      include PubkyAppSpecs::IdGenerators
 
       MAX_SHORT_CONTENT_LENGTH = 2000
       MAX_LONG_CONTENT_LENGTH = 50_000
@@ -419,7 +419,7 @@ end
 module PubkyAppSpecs
   module Models
     class File
-      include IdGenerators
+      include PubkyAppSpecs::IdGenerators
 
       MIN_NAME_LENGTH = 1
       MAX_NAME_LENGTH = 255
@@ -541,7 +541,7 @@ end
 module PubkyAppSpecs
   module Models
     class Tag
-      include IdGenerators
+      include PubkyAppSpecs::IdGenerators
 
       MAX_LABEL_LENGTH = 20
       MIN_LABEL_LENGTH = 1
@@ -656,7 +656,7 @@ end
 module PubkyAppSpecs
   module Models
     class Bookmark
-      include IdGenerators
+      include PubkyAppSpecs::IdGenerators
 
       PATH_SEGMENT = 'bookmarks/'
 
