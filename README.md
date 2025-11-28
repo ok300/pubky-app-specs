@@ -31,12 +31,22 @@ cd pkg
 npm run example
 ```
 
+### Ruby on Rails
+
+For Ruby on Rails integration, see the [Ruby on Rails Integration Guide](docs/RUBY_RAILS_INTEGRATION.md). The guide covers:
+
+- Using the WASM module via the `wasmer` gem
+- Pure Ruby implementation of validation and ID generation
+- Integration examples with Rails models and validators
+- Code snippets for validating `PubkyAppPost` and generating `PubkyAppFile` IDs
+
 ---
 
 ## Table of Contents
 
 - [Pubky.app Data Model Specification](#pubkyapp-data-model-specification)
     - [JS package](#js-package)
+    - [Ruby on Rails](#ruby-on-rails)
   - [Table of Contents](#table-of-contents)
   - [Introduction](#introduction)
   - [Quick Start](#quick-start)
