@@ -22,6 +22,8 @@ This guide explains how to use the Pubky.app data model specifications (`pubky-a
 
 The `pubky-app-specs` library is compiled to WebAssembly and can be used in Ruby via the `wasmer` gem.
 
+> **Note**: The `wasmer` and `wasmtime` gems are **server-side** WebAssembly runtimes. They run WASM code directly on your server, not in a browser. This means you can use the WASM approach in Rails controllers, background jobs (Sidekiq, ActiveJob, etc.), rake tasks, and any other server-side Ruby code.
+
 ### Installation
 
 Add to your Gemfile:
