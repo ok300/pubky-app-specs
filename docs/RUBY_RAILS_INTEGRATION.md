@@ -38,19 +38,45 @@ Then run:
 bundle install
 ```
 
-Download the WASM module from npm or build it from source:
+Download the WASM module from the npm package or build it from source:
 
 ```bash
-# From npm
-npm pack pubky-app-specs
-tar -xzf pubky-app-specs-*.tgz
-cp package/pubky_app_specs_bg.wasm lib/wasm/
+# From npm (recommended for version tracking)
+npm pack pubky-app-specs@0.4.0
+tar -xzf pubky-app-specs-0.4.0.tgz
+mkdir -p lib/wasm
+cp package/pubky_app_specs_bg.wasm lib/wasm/pubky_app_specs_bg-0.4.0.wasm
 
 # Or build from source
 cd pubky-app-specs
 wasm-pack build --target bundler
 cp pkg/pubky_app_specs_bg.wasm /path/to/your/rails/app/lib/wasm/
 ```
+
+#### Versioning Strategy
+
+We recommend including the version number in the WASM filename (e.g., `pubky_app_specs_bg-0.4.0.wasm`) for several reasons:
+
+1. **Clear version tracking**: Easily identify which version is deployed
+2. **Safe upgrades**: Keep old versions alongside new ones during migration
+3. **Cache busting**: Avoid stale module issues when upgrading
+4. **Rollback capability**: Quickly switch back to a previous version if needed
+
+You can also create a version constant in your initializer:
+
+```ruby
+# config/initializers/pubky_specs.rb
+module PubkySpecs
+  VERSION = '0.4.0'
+  WASM_FILENAME = "pubky_app_specs_bg-#{VERSION}.wasm"
+end
+```
+
+To upgrade to a new version:
+1. Download the new npm package: `npm pack pubky-app-specs@NEW_VERSION`
+2. Extract and copy the WASM file with versioned name
+3. Update the `VERSION` constant in your initializer
+4. Test thoroughly before removing the old WASM file
 
 ### Loading the WASM Module
 
@@ -59,6 +85,9 @@ cp pkg/pubky_app_specs_bg.wasm /path/to/your/rails/app/lib/wasm/
 require 'wasmer'
 
 module PubkySpecs
+  VERSION = '0.4.0'
+  WASM_FILENAME = "pubky_app_specs_bg-#{VERSION}.wasm"
+
   class << self
     def store
       @store ||= Wasmer::Store.new
@@ -66,7 +95,7 @@ module PubkySpecs
 
     def wasm_module
       @wasm_module ||= begin
-        wasm_path = Rails.root.join('lib', 'wasm', 'pubky_app_specs_bg.wasm')
+        wasm_path = Rails.root.join('lib', 'wasm', WASM_FILENAME)
         Wasmer::Module.new(store, File.read(wasm_path, mode: 'rb'))
       end
     end
