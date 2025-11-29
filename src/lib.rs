@@ -5,6 +5,10 @@ mod types;
 mod uri_parser;
 mod utils;
 
+// FFI module for C-compatible exports (not compiled for WASM)
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ffi;
+
 // Re-export domain types
 pub use common::{APP_PATH, PROTOCOL, PUBLIC_PATH, VERSION};
 pub use models::blob::PubkyAppBlob;

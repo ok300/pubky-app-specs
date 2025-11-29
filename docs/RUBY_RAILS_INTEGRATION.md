@@ -1,279 +1,323 @@
 # Ruby on Rails Integration Guide
 
-This guide explains how to use the Pubky.app data model specifications (`pubky-app-specs`) in a Ruby on Rails application.
+This guide explains how to use the Pubky.app data model specifications (`pubky-app-specs`) in a Ruby on Rails application via FFI (Foreign Function Interface).
 
-## Important: WASM Module Compatibility
+## Quick Start
 
-The `pubky-app-specs` WASM module is built using `wasm-bindgen` specifically for **JavaScript environments**. It includes JS glue code that handles:
-- Memory allocation and deallocation
-- String conversions between JavaScript and WASM
-- Complex object serialization/deserialization
-- Function binding and type conversions
+The library includes FFI exports in `src/ffi.rs` that allow you to use the models directly from Ruby/Rails.
 
-**This means the WASM module cannot be directly used with Ruby WASM runtimes** like `wasmtime` or `wasmer` without the JavaScript glue layer. Attempting to load and call the WASM functions directly would require manually reimplementing all the `wasm-bindgen` glue code, which is extremely complex and error-prone.
+```ruby
+# Example: Create and validate a post
+result = PubkyFFI.create_post(content: 'Hello, Pubky!', kind: 'short')
+puts "Post ID: #{result[:id]}" if result[:success]
 
-## Available Integration Options
-
-For Ruby on Rails integration, we recommend using **FFI (Foreign Function Interface)** which requires additional Rust code changes to the library:
-
-1. **FFI (Foreign Function Interface)** - The practical approach for Ruby/Rails
-   - Requires adding C-compatible exports to the Rust library
-   - Provides direct native performance
-   - Works reliably across platforms
+# Example: Generate a file ID
+file_result = PubkyFFI.create_file(
+  name: 'photo.jpg',
+  src: 'pubky://user123/pub/pubky.app/blobs/abc123',
+  content_type: 'image/jpeg',
+  size: 512_000
+)
+puts "File ID: #{file_result[:id]}"
+```
 
 ## Table of Contents
 
-- [Option 1: Using FFI (Recommended)](#option-1-using-ffi-recommended)
-  - [Current State](#current-state)
-  - [Required Rust Changes](#required-rust-changes)
-  - [Building the Shared Library](#building-the-shared-library)
-  - [Ruby FFI Usage](#ruby-ffi-usage)
-  - [Integration with Rails](#integration-with-rails)
+- [Building the Shared Library](#building-the-shared-library)
+- [Ruby FFI Setup](#ruby-ffi-setup)
+- [Available Functions](#available-functions)
+- [Usage Examples](#usage-examples)
+- [Integration with Rails](#integration-with-rails)
 - [Why Not WASM?](#why-not-wasm)
 
 ---
 
-## Option 1: Using FFI (Recommended)
+## Building the Shared Library
 
-FFI (Foreign Function Interface) allows Ruby to directly call functions in native shared libraries compiled from Rust. This can provide better performance than WASM for certain use cases.
-
-### Current State
-
-The `pubky-app-specs` Rust library is configured with `crate-type = ["cdylib", "rlib"]` in `Cargo.toml`, which means it **can** be compiled to a native shared library (`.so` on Linux, `.dylib` on macOS, `.dll` on Windows).
-
-However, the library currently doesn't export C-compatible FFI functions (no `#[no_mangle] extern "C"` functions). To use FFI, additional wrapper functions need to be added to the Rust codebase.
-
-### How FFI Would Work
-
-Once FFI exports are added to the Rust library, the integration would work as follows:
-
-1. **Compile the Rust library** to a native shared library
-2. **Use the `ffi` gem** in Ruby to load and call the functions
-3. **Handle memory** carefully (strings, structs, etc.)
-
-### Required Rust Changes
-
-To enable FFI, the following changes would need to be made to the Rust library. Here's an example of what FFI exports might look like:
-
-```rust
-// src/ffi.rs - Example FFI wrapper functions
-
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
-use crate::{PubkyAppPost, PubkyAppPostKind};
-use crate::traits::{TimestampId, Validatable};
-
-/// Free a string allocated by Rust
-/// 
-/// # Safety
-/// The pointer must be a valid CString allocated by Rust
-#[no_mangle]
-pub unsafe extern "C" fn pubky_free_string(ptr: *mut c_char) {
-    if !ptr.is_null() {
-        drop(CString::from_raw(ptr));
-    }
-}
-
-/// Create and validate a post, returning JSON result
-/// 
-/// # Safety
-/// The content pointer must be a valid null-terminated C string
-#[no_mangle]
-pub unsafe extern "C" fn pubky_create_post(
-    content: *const c_char,
-    kind: *const c_char,
-) -> *mut c_char {
-    // Convert C strings to Rust strings
-    let content = match CStr::from_ptr(content).to_str() {
-        Ok(s) => s.to_string(),
-        Err(_) => return std::ptr::null_mut(),
-    };
-    
-    let kind_str = match CStr::from_ptr(kind).to_str() {
-        Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    
-    let kind = match kind_str {
-        "short" => PubkyAppPostKind::Short,
-        "long" => PubkyAppPostKind::Long,
-        "image" => PubkyAppPostKind::Image,
-        "video" => PubkyAppPostKind::Video,
-        "link" => PubkyAppPostKind::Link,
-        "file" => PubkyAppPostKind::File,
-        _ => PubkyAppPostKind::Short,
-    };
-    
-    // Create and sanitize the post
-    let post = PubkyAppPost::new(content, kind, None, None, None);
-    let post_id = post.create_id();
-    
-    // Validate
-    if let Err(e) = post.validate(Some(&post_id)) {
-        let error_json = format!(r#"{{"error": "{}"}}"#, e);
-        return CString::new(error_json).unwrap().into_raw();
-    }
-    
-    // Return JSON result
-    let result = serde_json::json!({
-        "success": true,
-        "id": post_id,
-        "post": {
-            "content": post.content,
-            "kind": kind_str,
-        }
-    });
-    
-    CString::new(result.to_string()).unwrap().into_raw()
-}
-
-/// Validate a post without creating it
-/// 
-/// # Safety
-/// The json_input pointer must be a valid null-terminated C string
-#[no_mangle]
-pub unsafe extern "C" fn pubky_validate_post(json_input: *const c_char) -> *mut c_char {
-    let json_str = match CStr::from_ptr(json_input).to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            return CString::new(r#"{"valid": false, "error": "Invalid UTF-8"}"#)
-                .unwrap()
-                .into_raw();
-        }
-    };
-    
-    // Parse JSON and validate
-    match serde_json::from_str::<PubkyAppPost>(json_str) {
-        Ok(post) => {
-            let post = post.sanitize();
-            match post.validate(None) {
-                Ok(_) => CString::new(r#"{"valid": true}"#).unwrap().into_raw(),
-                Err(e) => {
-                    let result = format!(r#"{{"valid": false, "error": "{}"}}"#, e);
-                    CString::new(result).unwrap().into_raw()
-                }
-            }
-        }
-        Err(e) => {
-            let result = format!(r#"{{"valid": false, "error": "{}"}}"#, e);
-            CString::new(result).unwrap().into_raw()
-        }
-    }
-}
-
-/// Generate a timestamp-based ID for posts/files
-#[no_mangle]
-pub extern "C" fn pubky_generate_timestamp_id() -> *mut c_char {
-    let post = PubkyAppPost::new(
-        String::new(),
-        PubkyAppPostKind::Short,
-        None,
-        None,
-        None,
-    );
-    let id = post.create_id();
-    CString::new(id).unwrap().into_raw()
-}
-```
-
-The `Cargo.toml` already has the correct crate-type, but would need the FFI module added:
-
-```rust
-// In src/lib.rs, add:
-#[cfg(not(target_arch = "wasm32"))]
-mod ffi;
-```
-
-### Building the Shared Library
-
-Once FFI exports are added, compile the library:
+Build the library as a shared object that can be loaded via FFI:
 
 ```bash
-# Linux
-cargo build --release
-# Output: target/release/libpubky_app_specs.so
+# Clone the repository
+git clone https://github.com/pubky/pubky-app-specs.git
+cd pubky-app-specs
 
-# macOS
+# Build release shared library
 cargo build --release
-# Output: target/release/libpubky_app_specs.dylib
 
-# Windows
-cargo build --release
-# Output: target/release/pubky_app_specs.dll
+# The shared library will be at:
+# Linux:   target/release/libpubky_app_specs.so
+# macOS:   target/release/libpubky_app_specs.dylib
+# Windows: target/release/pubky_app_specs.dll
 ```
 
-### Ruby FFI Usage
+Copy the shared library to your Rails application:
 
-Once the shared library is compiled with FFI exports, you can use it from Ruby:
+```bash
+mkdir -p your_rails_app/lib/native
+cp target/release/libpubky_app_specs.so your_rails_app/lib/native/
+```
+
+---
+
+## Ruby FFI Setup
+
+Add the `ffi` gem to your Gemfile:
 
 ```ruby
 # Gemfile
 gem 'ffi', '~> 1.16'
 ```
 
+Create an initializer to load and wrap the library:
+
 ```ruby
 # config/initializers/pubky_ffi.rb
 require 'ffi'
+require 'json'
 
 module PubkyFFI
   extend FFI::Library
-  
+
   # Load the shared library based on platform
-  lib_name = case RbConfig::CONFIG['host_os']
-             when /darwin/
-               'libpubky_app_specs.dylib'
-             when /linux/
-               'libpubky_app_specs.so'
-             when /mswin|mingw/
-               'pubky_app_specs.dll'
+  LIB_NAME = case RbConfig::CONFIG['host_os']
+             when /darwin/  then 'libpubky_app_specs.dylib'
+             when /linux/   then 'libpubky_app_specs.so'
+             when /mswin|mingw/ then 'pubky_app_specs.dll'
              end
-  
-  ffi_lib Rails.root.join('lib', 'native', lib_name).to_s
-  
-  # Define the FFI function signatures
-  attach_function :pubky_create_post, [:string, :string], :pointer
-  attach_function :pubky_validate_post, [:string], :pointer
-  attach_function :pubky_generate_timestamp_id, [], :pointer
+
+  ffi_lib Rails.root.join('lib', 'native', LIB_NAME).to_s
+
+  # Memory management
   attach_function :pubky_free_string, [:pointer], :void
-  
+
+  # Post functions
+  attach_function :pubky_create_post, [:string, :string], :pointer
+  attach_function :pubky_create_post_full, [:string, :string, :string, :string, :string], :pointer
+  attach_function :pubky_validate_post, [:string, :string], :pointer
+  attach_function :pubky_generate_timestamp_id, [], :pointer
+
+  # File functions
+  attach_function :pubky_create_file, [:string, :string, :string, :size_t], :pointer
+  attach_function :pubky_validate_file, [:string, :string], :pointer
+
+  # Bookmark functions
+  attach_function :pubky_create_bookmark, [:string], :pointer
+  attach_function :pubky_validate_bookmark, [:string, :string], :pointer
+
+  # Tag functions
+  attach_function :pubky_create_tag, [:string, :string], :pointer
+  attach_function :pubky_validate_tag, [:string, :string], :pointer
+
+  # User functions
+  attach_function :pubky_create_user, [:string, :string, :string, :string], :pointer
+  attach_function :pubky_create_user_with_links, [:string, :string, :string, :string, :string], :pointer
+  attach_function :pubky_validate_user, [:string], :pointer
+
+  # Path helpers
+  attach_function :pubky_get_post_path, [:string], :pointer
+  attach_function :pubky_get_file_path, [:string], :pointer
+  attach_function :pubky_get_bookmark_path, [:string], :pointer
+  attach_function :pubky_get_tag_path, [:string], :pointer
+  attach_function :pubky_get_user_path, [], :pointer
+
   class << self
+    # Create a post
     def create_post(content:, kind: 'short')
-      result_ptr = pubky_create_post(content, kind)
-      result = result_ptr.read_string
-      pubky_free_string(result_ptr)
-      JSON.parse(result, symbolize_names: true)
+      call_and_parse(:pubky_create_post, content, kind)
     end
-    
-    def validate_post(json_data)
-      json_str = json_data.is_a?(String) ? json_data : json_data.to_json
-      result_ptr = pubky_validate_post(json_str)
-      result = result_ptr.read_string
-      pubky_free_string(result_ptr)
-      JSON.parse(result, symbolize_names: true)
+
+    # Create a post with all options
+    def create_post_full(content:, kind: 'short', parent: nil, embed_uri: nil, embed_kind: nil)
+      call_and_parse(:pubky_create_post_full, content, kind, parent, embed_uri, embed_kind)
     end
-    
+
+    # Validate a post
+    def validate_post(json_or_hash, id: nil)
+      json_str = json_or_hash.is_a?(String) ? json_or_hash : json_or_hash.to_json
+      call_and_parse(:pubky_validate_post, json_str, id)
+    end
+
+    # Generate a timestamp-based ID
     def generate_id
-      result_ptr = pubky_generate_timestamp_id
-      result = result_ptr.read_string
-      pubky_free_string(result_ptr)
+      ptr = pubky_generate_timestamp_id
+      result = ptr.read_string
+      pubky_free_string(ptr)
+      result
+    end
+
+    # Create a file
+    def create_file(name:, src:, content_type:, size:)
+      call_and_parse(:pubky_create_file, name, src, content_type, size)
+    end
+
+    # Validate a file
+    def validate_file(json_or_hash, id: nil)
+      json_str = json_or_hash.is_a?(String) ? json_or_hash : json_or_hash.to_json
+      call_and_parse(:pubky_validate_file, json_str, id)
+    end
+
+    # Create a bookmark
+    def create_bookmark(uri:)
+      call_and_parse(:pubky_create_bookmark, uri)
+    end
+
+    # Validate a bookmark
+    def validate_bookmark(json_or_hash, id: nil)
+      json_str = json_or_hash.is_a?(String) ? json_or_hash : json_or_hash.to_json
+      call_and_parse(:pubky_validate_bookmark, json_str, id)
+    end
+
+    # Create a tag
+    def create_tag(uri:, label:)
+      call_and_parse(:pubky_create_tag, uri, label)
+    end
+
+    # Validate a tag
+    def validate_tag(json_or_hash, id: nil)
+      json_str = json_or_hash.is_a?(String) ? json_or_hash : json_or_hash.to_json
+      call_and_parse(:pubky_validate_tag, json_str, id)
+    end
+
+    # Create a user profile
+    def create_user(name:, bio: nil, image: nil, status: nil)
+      call_and_parse(:pubky_create_user, name, bio, image, status)
+    end
+
+    # Create a user profile with links
+    def create_user_with_links(name:, bio: nil, image: nil, status: nil, links: nil)
+      links_json = links&.to_json
+      call_and_parse(:pubky_create_user_with_links, name, bio, image, status, links_json)
+    end
+
+    # Validate a user profile
+    def validate_user(json_or_hash)
+      json_str = json_or_hash.is_a?(String) ? json_or_hash : json_or_hash.to_json
+      call_and_parse(:pubky_validate_user, json_str)
+    end
+
+    # Get paths
+    def post_path(id)
+      call_and_read(:pubky_get_post_path, id)
+    end
+
+    def file_path(id)
+      call_and_read(:pubky_get_file_path, id)
+    end
+
+    def bookmark_path(id)
+      call_and_read(:pubky_get_bookmark_path, id)
+    end
+
+    def tag_path(id)
+      call_and_read(:pubky_get_tag_path, id)
+    end
+
+    def user_path
+      ptr = pubky_get_user_path
+      result = ptr.read_string
+      pubky_free_string(ptr)
+      result
+    end
+
+    private
+
+    def call_and_parse(method, *args)
+      ptr = send(method, *args)
+      result = ptr.read_string
+      pubky_free_string(ptr)
+      JSON.parse(result, symbolize_names: true)
+    end
+
+    def call_and_read(method, *args)
+      ptr = send(method, *args)
+      return nil if ptr.null?
+      result = ptr.read_string
+      pubky_free_string(ptr)
       result
     end
   end
 end
 ```
 
+---
+
+## Available Functions
+
+### Post Functions
+
+| Function | Description |
+|----------|-------------|
+| `pubky_create_post(content, kind)` | Create a new post with content and kind |
+| `pubky_create_post_full(content, kind, parent, embed_uri, embed_kind)` | Create a post with all optional fields |
+| `pubky_validate_post(json, id)` | Validate a post from JSON |
+| `pubky_generate_timestamp_id()` | Generate a timestamp-based ID |
+
+### File Functions
+
+| Function | Description |
+|----------|-------------|
+| `pubky_create_file(name, src, content_type, size)` | Create a new file entry |
+| `pubky_validate_file(json, id)` | Validate a file from JSON |
+
+### Bookmark Functions
+
+| Function | Description |
+|----------|-------------|
+| `pubky_create_bookmark(uri)` | Create a bookmark for a URI |
+| `pubky_validate_bookmark(json, id)` | Validate a bookmark from JSON |
+
+### Tag Functions
+
+| Function | Description |
+|----------|-------------|
+| `pubky_create_tag(uri, label)` | Create a tag for a URI with a label |
+| `pubky_validate_tag(json, id)` | Validate a tag from JSON |
+
+### User Functions
+
+| Function | Description |
+|----------|-------------|
+| `pubky_create_user(name, bio, image, status)` | Create a user profile |
+| `pubky_create_user_with_links(name, bio, image, status, links_json)` | Create a user with links |
+| `pubky_validate_user(json)` | Validate a user profile from JSON |
+
+### Path Helpers
+
+| Function | Description |
+|----------|-------------|
+| `pubky_get_post_path(id)` | Get the path for a post |
+| `pubky_get_file_path(id)` | Get the path for a file |
+| `pubky_get_bookmark_path(id)` | Get the path for a bookmark |
+| `pubky_get_tag_path(id)` | Get the path for a tag |
+| `pubky_get_user_path()` | Get the path for a user profile |
+
+---
+
+## Usage Examples
+
+### Creating and Validating a Post
+
 ```ruby
-# Usage example
+# Create a short post
 result = PubkyFFI.create_post(
-  content: 'Hello from FFI!',
+  content: 'Hello, Pubky world!',
   kind: 'short'
 )
 
 if result[:success]
   puts "Post ID: #{result[:id]}"
+  puts "Path: #{result[:path]}"
+  puts "Post: #{result[:post]}"
 else
   puts "Error: #{result[:error]}"
 end
+
+# Create a reply to another post
+reply = PubkyFFI.create_post_full(
+  content: 'This is a reply!',
+  kind: 'short',
+  parent: 'pubky://user123/pub/pubky.app/posts/0033SSE3B1FQ0'
+)
 
 # Validate a post
 validation = PubkyFFI.validate_post({
@@ -281,29 +325,112 @@ validation = PubkyFFI.validate_post({
   kind: 'short'
 })
 puts "Valid: #{validation[:valid]}"
-
-# Generate an ID
-new_id = PubkyFFI.generate_id
-puts "Generated ID: #{new_id}"
 ```
 
-### Integration with Rails
+### Working with Files
 
-Once FFI exports are added, you can use the same Rails integration patterns shown below:
+```ruby
+# Create a file entry
+file_result = PubkyFFI.create_file(
+  name: 'photo.jpg',
+  src: 'pubky://user123/pub/pubky.app/blobs/abc123',
+  content_type: 'image/jpeg',
+  size: 512_000
+)
 
-#### Using in Controllers
+if file_result[:success]
+  puts "File ID: #{file_result[:id]}"
+  puts "File Path: #{file_result[:path]}"
+end
+```
+
+### Creating Bookmarks and Tags
+
+```ruby
+# Bookmark a post
+bookmark = PubkyFFI.create_bookmark(
+  uri: 'pubky://user123/pub/pubky.app/posts/0033SSE3B1FQ0'
+)
+puts "Bookmark ID: #{bookmark[:id]}"
+
+# Tag a post
+tag = PubkyFFI.create_tag(
+  uri: 'pubky://user123/pub/pubky.app/posts/0033SSE3B1FQ0',
+  label: 'interesting'
+)
+puts "Tag ID: #{tag[:id]}"
+```
+
+### User Profiles
+
+```ruby
+# Create a user profile
+user = PubkyFFI.create_user(
+  name: 'Alice',
+  bio: 'Developer and Pubky enthusiast',
+  image: 'https://example.com/avatar.png',
+  status: 'Building cool stuff'
+)
+puts "User path: #{user[:path]}"
+
+# Create a user with links
+user_with_links = PubkyFFI.create_user_with_links(
+  name: 'Alice',
+  bio: 'Developer',
+  image: nil,
+  status: nil,
+  links: [
+    { title: 'GitHub', url: 'https://github.com/alice' },
+    { title: 'Website', url: 'https://alice.dev' }
+  ]
+)
+```
+
+---
+
+## Integration with Rails
+
+### Service Object
+
+```ruby
+# app/services/pubky_post_service.rb
+class PubkyPostService
+  def self.create(content:, kind: 'short', parent: nil)
+    if parent
+      PubkyFFI.create_post_full(
+        content: content,
+        kind: kind,
+        parent: parent
+      )
+    else
+      PubkyFFI.create_post(content: content, kind: kind)
+    end
+  end
+
+  def self.validate(post_data, id: nil)
+    PubkyFFI.validate_post(post_data, id: id)
+  end
+end
+```
+
+### Controller
 
 ```ruby
 # app/controllers/posts_controller.rb
 class PostsController < ApplicationController
   def create
-    result = PubkyFFI.create_post(
+    result = PubkyPostService.create(
       content: params[:content],
-      kind: params[:kind] || 'short'
+      kind: params[:kind] || 'short',
+      parent: params[:parent_uri]
     )
 
     if result[:success]
-      render json: { id: result[:id], post: result[:post] }, status: :created
+      render json: {
+        id: result[:id],
+        path: result[:path],
+        post: result[:post]
+      }, status: :created
     else
       render json: { error: result[:error] }, status: :unprocessable_entity
     end
@@ -311,26 +438,27 @@ class PostsController < ApplicationController
 end
 ```
 
-#### Using in Background Jobs
+### Background Job
 
 ```ruby
 # app/jobs/create_pubky_post_job.rb
 class CreatePubkyPostJob < ApplicationJob
   queue_as :default
 
-  def perform(user_id, content, kind = 'short')
+  def perform(content, kind = 'short')
     result = PubkyFFI.create_post(content: content, kind: kind)
 
     if result[:success]
-      Rails.logger.info "Created post #{result[:id]} for user #{user_id}"
+      Rails.logger.info "Created post #{result[:id]}"
     else
       Rails.logger.error "Failed to create post: #{result[:error]}"
+      raise result[:error]
     end
   end
 end
 ```
 
-#### Custom Validator
+### Custom Validator
 
 ```ruby
 # app/validators/pubky_post_validator.rb
@@ -357,42 +485,38 @@ end
 
 ## Why Not WASM?
 
-The `pubky-app-specs` WASM module is built using `wasm-bindgen` for JavaScript environments. Here's why it cannot be directly used with Ruby WASM runtimes:
+The `pubky-app-specs` WASM module is built using `wasm-bindgen` specifically for **JavaScript environments**. It includes JS glue code that handles memory allocation, string conversions, and type bindings.
 
-### The Problem
+**This WASM module cannot be directly used with Ruby WASM runtimes** (wasmtime/wasmer) because:
 
-When `wasm-bindgen` builds a WASM module, it generates:
+1. The WASM file expects JavaScript glue code to be present
+2. Reimplementing the glue layer in Ruby would require hundreds of lines of complex code
+3. Memory management, type conversions, and ABI compatibility are non-trivial
 
-1. **A `.wasm` file** - The compiled WebAssembly binary
-2. **JavaScript glue code** - Essential code that handles:
-   - Memory allocation for strings and complex objects
-   - Type conversions between JS and WASM
-   - Function bindings with proper signatures
-   - Cleanup and garbage collection coordination
-
-The WASM file alone is **not self-contained** - it expects the JavaScript glue code to be present and to handle all the complex interop.
-
-### What Would Be Required
-
-To use the WASM module directly from Ruby (via `wasmtime` or `wasmer`), you would need to:
-
-1. **Reimplement the entire `wasm-bindgen` glue layer in Ruby** - This is hundreds of lines of complex code
-2. **Handle WASM linear memory manually** - Allocate/deallocate strings, manage memory layout
-3. **Implement the same type conversions** - Ruby types ↔ WASM memory representation
-4. **Match the exact ABI** that `wasm-bindgen` uses - Function signatures, memory layout, etc.
-
-This is extremely complex and error-prone, making it impractical for production use.
-
-### The Solution
-
-**FFI is the recommended approach** for Ruby/Rails integration because:
-
-- It uses standard C ABI which Ruby's `ffi` gem handles natively
+**FFI is the recommended approach** because:
+- It uses the standard C ABI that Ruby's `ffi` gem handles natively
 - Memory management is explicit and well-understood
-- No JavaScript dependency or glue code required
-- Native performance without WASM overhead
+- Native performance without any overhead
+- The FFI exports are now included in the library (`src/ffi.rs`)
 
-The trade-off is that FFI exports need to be added to the Rust library, but once added, the integration is clean and maintainable.
+---
+
+## Memory Management
+
+All functions that return strings allocate memory on the Rust side. The Ruby wrapper automatically frees this memory using `pubky_free_string`. If you're calling the FFI functions directly without the wrapper, remember to free returned pointers:
+
+```ruby
+# Direct FFI usage (not recommended)
+ptr = PubkyFFI.pubky_create_post("Hello", "short")
+result = ptr.read_string
+PubkyFFI.pubky_free_string(ptr)  # Don't forget this!
+```
+
+---
+
+## Thread Safety
+
+All FFI functions are thread-safe and can be called from multiple threads concurrently. The Ruby wrapper methods are also thread-safe.
 
 ---
 
