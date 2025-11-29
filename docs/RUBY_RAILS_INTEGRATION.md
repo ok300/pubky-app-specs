@@ -1,6 +1,6 @@
 # Ruby on Rails Integration Guide
 
-This guide explains how to use the Pubky.app data model specifications (`pubky-app-specs`) in a Ruby on Rails application. You can either use the WebAssembly (WASM) module directly via the `wasmer` or `wasmtime` gems, or implement the validation and ID generation logic in pure Ruby.
+This guide explains how to use the Pubky.app data model specifications (`pubky-app-specs`) in a Ruby on Rails application. You can either use the WebAssembly (WASM) module directly via the `wasmtime` or `wasmer` gems, or implement the validation and ID generation logic in pure Ruby.
 
 ## Table of Contents
 
@@ -20,16 +20,16 @@ This guide explains how to use the Pubky.app data model specifications (`pubky-a
 
 ## Option 1: Using the WASM Module
 
-The `pubky-app-specs` library is compiled to WebAssembly and can be used in Ruby via the `wasmer` gem.
+The `pubky-app-specs` library is compiled to WebAssembly and can be used in Ruby via the `wasmtime` gem.
 
-> **Note**: The `wasmer` and `wasmtime` gems are **server-side** WebAssembly runtimes. They run WASM code directly on your server, not in a browser. This means you can use the WASM approach in Rails controllers, background jobs (Sidekiq, ActiveJob, etc.), rake tasks, and any other server-side Ruby code.
+> **Note**: The `wasmtime` and `wasmer` gems are **server-side** WebAssembly runtimes. They run WASM code directly on your server, not in a browser. This means you can use the WASM approach in Rails controllers, background jobs (Sidekiq, ActiveJob, etc.), rake tasks, and any other server-side Ruby code.
 
 ### Installation
 
 Add to your Gemfile:
 
 ```ruby
-gem 'wasmer', '~> 1.2'
+gem 'wasmtime', '~> 29.0'
 ```
 
 Then run:
@@ -82,26 +82,30 @@ To upgrade to a new version:
 
 ```ruby
 # config/initializers/pubky_specs.rb
-require 'wasmer'
+require 'wasmtime'
 
 module PubkySpecs
   VERSION = '0.4.0'
   WASM_FILENAME = "pubky_app_specs_bg-#{VERSION}.wasm"
 
   class << self
-    def store
-      @store ||= Wasmer::Store.new
+    def engine
+      @engine ||= Wasmtime::Engine.new
     end
 
     def wasm_module
       @wasm_module ||= begin
         wasm_path = Rails.root.join('lib', 'wasm', WASM_FILENAME)
-        Wasmer::Module.new(store, File.read(wasm_path, mode: 'rb'))
+        Wasmtime::Module.from_file(engine, wasm_path.to_s)
       end
     end
 
+    def store
+      @store ||= Wasmtime::Store.new(engine)
+    end
+
     def instance
-      @instance ||= Wasmer::Instance.new(wasm_module, nil)
+      @instance ||= Wasmtime::Instance.new(store, wasm_module)
     end
   end
 end
