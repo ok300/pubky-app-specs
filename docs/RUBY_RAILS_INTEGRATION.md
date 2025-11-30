@@ -120,6 +120,9 @@ module PubkyFFI
   attach_function :pubky_get_tag_path, [:string], :pointer
   attach_function :pubky_get_user_path, [], :pointer
 
+  # URI parsing
+  attach_function :pubky_parse_uri, [:string], :pointer
+
   class << self
     # Create a post
     def create_post(content:, kind: 'short')
@@ -219,6 +222,11 @@ module PubkyFFI
       result
     end
 
+    # Parse a pubky:// URI
+    def parse_uri(uri)
+      call_and_parse(:pubky_parse_uri, uri)
+    end
+
     private
 
     def call_and_parse(method, *args)
@@ -290,6 +298,12 @@ end
 | `pubky_get_bookmark_path(id)` | Get the path for a bookmark |
 | `pubky_get_tag_path(id)` | Get the path for a tag |
 | `pubky_get_user_path()` | Get the path for a user profile |
+
+### URI Parsing
+
+| Function | Description |
+|----------|-------------|
+| `pubky_parse_uri(uri)` | Parse a pubky:// URI and extract user_id and resource info |
 
 ---
 
@@ -384,6 +398,42 @@ user_with_links = PubkyFFI.create_user_with_links(
     { title: 'Website', url: 'https://alice.dev' }
   ]
 )
+```
+
+### Parsing URIs
+
+```ruby
+# Parse a pubky:// URI to extract user_id and resource information
+uri = 'pubky://operrr8wsbpr3ue9d4qj41ge1kcc6r7fdiy6o3ugjrrhi4y77rdo/pub/pubky.app/posts/0033SSE3B1FQ0'
+result = PubkyFFI.parse_uri(uri)
+
+if result[:success]
+  puts "User ID: #{result[:user_id]}"
+  puts "Resource Type: #{result[:resource_type]}"  # => "posts"
+  puts "Resource ID: #{result[:resource_id]}"      # => "0033SSE3B1FQ0"
+else
+  puts "Error: #{result[:error]}"
+end
+
+# Parse a user profile URI (no resource ID)
+user_uri = 'pubky://operrr8wsbpr3ue9d4qj41ge1kcc6r7fdiy6o3ugjrrhi4y77rdo/pub/pubky.app/profile.json'
+user_result = PubkyFFI.parse_uri(user_uri)
+
+if user_result[:success]
+  puts "User ID: #{user_result[:user_id]}"
+  puts "Resource Type: #{user_result[:resource_type]}"  # => "profile.json"
+  puts "Resource ID: #{user_result[:resource_id]}"      # => nil
+end
+
+# Parse various resource types
+bookmark_uri = 'pubky://operrr8wsbpr3ue9d4qj41ge1kcc6r7fdiy6o3ugjrrhi4y77rdo/pub/pubky.app/bookmarks/ABC123'
+tag_uri = 'pubky://operrr8wsbpr3ue9d4qj41ge1kcc6r7fdiy6o3ugjrrhi4y77rdo/pub/pubky.app/tags/XYZ789'
+file_uri = 'pubky://operrr8wsbpr3ue9d4qj41ge1kcc6r7fdiy6o3ugjrrhi4y77rdo/pub/pubky.app/files/FILE001'
+
+[bookmark_uri, tag_uri, file_uri].each do |uri|
+  parsed = PubkyFFI.parse_uri(uri)
+  puts "#{parsed[:resource_type]}: #{parsed[:resource_id]}" if parsed[:success]
+end
 ```
 
 ---

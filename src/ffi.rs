@@ -791,6 +791,66 @@ pub extern "C" fn pubky_get_user_path() -> *mut c_char {
 }
 
 // =============================================================================
+// URI Parsing Functions
+// =============================================================================
+
+/// Parse a pubky:// URI and extract user_id and resource information.
+///
+/// # Arguments
+/// * `uri` - A pubky:// URI string (e.g., "pubky://user123/pub/pubky.app/posts/abc123")
+///
+/// # Returns
+/// A JSON string with the parsed URI information. On success:
+/// ```json
+/// {
+///   "success": true,
+///   "user_id": "user123...",
+///   "resource_type": "posts",
+///   "resource_id": "abc123"
+/// }
+/// ```
+///
+/// For resources without an ID (like User or LastRead):
+/// ```json
+/// {
+///   "success": true,
+///   "user_id": "user123...",
+///   "resource_type": "profile.json",
+///   "resource_id": null
+/// }
+/// ```
+///
+/// On failure:
+/// ```json
+/// { "success": false, "error": "Error message" }
+/// ```
+///
+/// # Safety
+/// `uri` must be a valid null-terminated C string.
+/// The returned string must be freed with `pubky_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn pubky_parse_uri(uri: *const c_char) -> *mut c_char {
+    let uri_str = match c_str_to_string(uri) {
+        Ok(s) => s,
+        Err(e) => return error_json(e),
+    };
+
+    match crate::ParsedUri::try_from(uri_str.as_str()) {
+        Ok(parsed) => {
+            let result = serde_json::json!({
+                "success": true,
+                "user_id": parsed.user_id.to_string(),
+                "resource_type": parsed.resource.to_string(),
+                "resource_id": parsed.resource.id()
+            });
+
+            string_to_c_str(result.to_string())
+        }
+        Err(e) => error_json(&e),
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -961,6 +1021,63 @@ mod tests {
             pubky_free_string(bookmark_path);
             pubky_free_string(tag_path);
             pubky_free_string(user_path);
+        }
+    }
+
+    #[test]
+    fn test_parse_uri_post() {
+        let uri = CString::new("pubky://operrr8wsbpr3ue9d4qj41ge1kcc6r7fdiy6o3ugjrrhi4y77rdo/pub/pubky.app/posts/0033SSE3B1FQ0").unwrap();
+
+        unsafe {
+            let result_ptr = pubky_parse_uri(uri.as_ptr());
+            assert!(!result_ptr.is_null());
+
+            let result_str = CStr::from_ptr(result_ptr).to_str().unwrap();
+            let result: serde_json::Value = serde_json::from_str(result_str).unwrap();
+
+            assert_eq!(result["success"], true);
+            assert_eq!(result["user_id"], "operrr8wsbpr3ue9d4qj41ge1kcc6r7fdiy6o3ugjrrhi4y77rdo");
+            assert_eq!(result["resource_type"], "posts");
+            assert_eq!(result["resource_id"], "0033SSE3B1FQ0");
+
+            pubky_free_string(result_ptr);
+        }
+    }
+
+    #[test]
+    fn test_parse_uri_user() {
+        let uri = CString::new("pubky://operrr8wsbpr3ue9d4qj41ge1kcc6r7fdiy6o3ugjrrhi4y77rdo/pub/pubky.app/profile.json").unwrap();
+
+        unsafe {
+            let result_ptr = pubky_parse_uri(uri.as_ptr());
+            assert!(!result_ptr.is_null());
+
+            let result_str = CStr::from_ptr(result_ptr).to_str().unwrap();
+            let result: serde_json::Value = serde_json::from_str(result_str).unwrap();
+
+            assert_eq!(result["success"], true);
+            assert_eq!(result["resource_type"], "profile.json");
+            assert!(result["resource_id"].is_null());
+
+            pubky_free_string(result_ptr);
+        }
+    }
+
+    #[test]
+    fn test_parse_uri_invalid() {
+        let uri = CString::new("http://invalid/uri").unwrap();
+
+        unsafe {
+            let result_ptr = pubky_parse_uri(uri.as_ptr());
+            assert!(!result_ptr.is_null());
+
+            let result_str = CStr::from_ptr(result_ptr).to_str().unwrap();
+            let result: serde_json::Value = serde_json::from_str(result_str).unwrap();
+
+            assert_eq!(result["success"], false);
+            assert!(result["error"].is_string());
+
+            pubky_free_string(result_ptr);
         }
     }
 }
