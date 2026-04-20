@@ -456,13 +456,14 @@ pub fn get_valid_mime_types() -> Vec<JsValue> {
 
 /// Parses a Pubky URI and returns a strongly typed `ParsedUriResult`.
 ///
-/// This function wraps the internal ParsedUri ust parsing logic. It converts the result into a
+/// This function wraps the internal ParsedUriV2 parsing logic. It converts the result into a
 /// strongly typed object that is easier to use in TypeScript.
 ///
 /// # Parameters
 ///
 /// - `uri`: A string slice representing the Pubky URI. The URI should follow the format:
-///   `pubky://<user_id>/pub/pubky.app/<resource>[/<id>]`.
+///   `pubky://<user_id>/pub/pubky.app/<resource>[/<id>]` for standard URIs, or
+///   `pubky://<user_id>/pub/<app>/tags/<tag_id>` for universal tag URIs.
 ///
 /// # Returns
 ///
@@ -489,13 +490,13 @@ pub fn get_valid_mime_types() -> Vec<JsValue> {
 /// ```
 #[wasm_bindgen]
 pub fn parse_uri(uri: &str) -> Result<ParsedUriResult, String> {
-    // Attempt to parse the URI using ParsedUri logic.
-    let parsed = ParsedUri::try_from(uri)?;
+    // Attempt to parse the URI using ParsedUriV2 logic.
+    let parsed = ParsedUriV2::try_from(uri)?;
 
     // Build and return the strongly typed result.
     Ok(ParsedUriResult {
-        user_id: parsed.user_id.to_string(),
-        resource: parsed.resource.to_string(),
-        resource_id: parsed.resource.id(),
+        user_id: parsed.user_id().to_string(),
+        resource: parsed.resource().to_string(),
+        resource_id: parsed.resource().id(),
     })
 }

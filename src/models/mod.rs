@@ -1,4 +1,4 @@
-use crate::{traits::Validatable, ParsedUri, Resource};
+use crate::{traits::Validatable, ParsedUriV2, Resource};
 
 pub mod blob;
 pub mod bookmark;
@@ -35,8 +35,8 @@ impl PubkyAppObject {
     /// Given a URI and a blob (raw data from the homeserver),
     /// this function returns the fully formed PubkyAppObject.
     pub fn from_uri<S: AsRef<str>>(uri: S, blob: &[u8]) -> Result<Self, String> {
-        let parsed_uri = ParsedUri::try_from(uri.as_ref())?;
-        Self::from_resource(&parsed_uri.resource, blob)
+        let parsed_uri = ParsedUriV2::try_from(uri.as_ref())?;
+        Self::from_resource(parsed_uri.resource(), blob)
     }
 
     /// Given a Resource and a blob (raw data from the homeserver),

@@ -24,7 +24,8 @@ pub use models::tag::PubkyAppTag;
 pub use models::user::{PubkyAppUser, PubkyAppUserLink};
 pub use models::PubkyAppObject;
 pub use types::PubkyId;
-pub use uri_parser::{ParsedUri, Resource};
+#[allow(deprecated)]
+pub use uri_parser::{ParsedUri, ParsedUriV2, Resource};
 pub use utils::*;
 
 // Our WASM module

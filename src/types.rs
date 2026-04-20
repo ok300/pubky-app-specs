@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::*;
 #[cfg(feature = "openapi")]
 use utoipa::ToSchema;
 
-use crate::{ParsedUri, Resource};
+use crate::{ParsedUriV2, Resource};
 
 /// Represents user data with name, bio, image, links, and status.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -34,8 +34,8 @@ impl PubkyId {
         Ok(PubkyId(s.to_string()))
     }
 
-    pub fn to_uri(&self) -> ParsedUri {
-        ParsedUri {
+    pub fn to_uri(&self) -> ParsedUriV2 {
+        ParsedUriV2::AppSpec {
             user_id: self.clone(),
             resource: Resource::User,
         }
