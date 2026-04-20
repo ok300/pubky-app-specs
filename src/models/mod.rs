@@ -36,7 +36,7 @@ impl PubkyAppObject {
     /// this function returns the fully formed PubkyAppObject.
     pub fn from_uri<S: AsRef<str>>(uri: S, blob: &[u8]) -> Result<Self, String> {
         let parsed_uri = ParsedUri::try_from(uri.as_ref())?;
-        Self::from_resource(&parsed_uri.resource, blob)
+        Self::from_resource(parsed_uri.resource(), blob)
     }
 
     /// Given a Resource and a blob (raw data from the homeserver),

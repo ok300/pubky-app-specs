@@ -65,33 +65,83 @@ impl Resource {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct ParsedUri {
-    pub user_id: PubkyId,
-    pub resource: Resource,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ParsedUri {
+    /// Standard URIs (pubky.app path)
+    AppSpec {
+        user_id: PubkyId,
+        resource: Resource,
+    },
+    /// Universal tag URI from a different app.
+    /// Format: pubky://<user_id>/pub/<app>/tags/<tag_id>
+    UniversalTag {
+        user_id: PubkyId,
+        app: String,
+        resource: Resource,
+        tag_id: String,
+    },
+}
+
+impl Default for ParsedUri {
+    fn default() -> Self {
+        ParsedUri::AppSpec {
+            user_id: PubkyId::default(),
+            resource: Resource::default(),
+        }
+    }
 }
 
 impl ParsedUri {
+    /// Returns a reference to the user_id regardless of variant.
+    pub fn user_id(&self) -> &PubkyId {
+        match self {
+            ParsedUri::AppSpec { user_id, .. } => user_id,
+            ParsedUri::UniversalTag { user_id, .. } => user_id,
+        }
+    }
+
+    /// Returns a reference to the resource regardless of variant.
+    pub fn resource(&self) -> &Resource {
+        match self {
+            ParsedUri::AppSpec { resource, .. } => resource,
+            ParsedUri::UniversalTag { resource, .. } => resource,
+        }
+    }
+
     /// Converts the [ParsedUri] back into its URI string representation.
     /// Returns an error if the resource is Unknown.
     pub fn try_to_uri_str(&self) -> Result<String, String> {
         use crate::traits::{HasIdPath, HasPath};
 
-        let path = match &self.resource {
-            Resource::User => PubkyAppUser::create_path(),
-            Resource::LastRead => PubkyAppLastRead::create_path(),
-            Resource::Post(id) => PubkyAppPost::create_path(id),
-            Resource::Follow(id) => PubkyAppFollow::create_path(id.as_ref()),
-            Resource::Mute(id) => PubkyAppMute::create_path(id.as_ref()),
-            Resource::Bookmark(id) => PubkyAppBookmark::create_path(id),
-            Resource::Tag(id) => PubkyAppTag::create_path(id),
-            Resource::File(id) => PubkyAppFile::create_path(id),
-            Resource::Blob(id) => PubkyAppBlob::create_path(id),
-            Resource::Feed(id) => PubkyAppFeed::create_path(id),
-            Resource::Unknown => return Err("Cannot convert Unknown resource to URI".to_string()),
-        };
-
-        Ok([PROTOCOL, self.user_id.as_ref(), &path].concat())
+        match self {
+            ParsedUri::AppSpec { user_id, resource } => {
+                let path = match resource {
+                    Resource::User => PubkyAppUser::create_path(),
+                    Resource::LastRead => PubkyAppLastRead::create_path(),
+                    Resource::Post(id) => PubkyAppPost::create_path(id),
+                    Resource::Follow(id) => PubkyAppFollow::create_path(id.as_ref()),
+                    Resource::Mute(id) => PubkyAppMute::create_path(id.as_ref()),
+                    Resource::Bookmark(id) => PubkyAppBookmark::create_path(id),
+                    Resource::Tag(id) => PubkyAppTag::create_path(id),
+                    Resource::File(id) => PubkyAppFile::create_path(id),
+                    Resource::Blob(id) => PubkyAppBlob::create_path(id),
+                    Resource::Feed(id) => PubkyAppFeed::create_path(id),
+                    Resource::Unknown => {
+                        return Err("Cannot convert Unknown resource to URI".to_string())
+                    }
+                };
+                Ok([PROTOCOL, user_id.as_ref(), &path].concat())
+            }
+            ParsedUri::UniversalTag {
+                user_id,
+                app,
+                tag_id,
+                ..
+            } => Ok(format!(
+                "{}{}{}{}/tags/{}",
+                PROTOCOL, user_id, PUBLIC_PATH, app, tag_id
+            )),
+        }
     }
 }
 
@@ -131,43 +181,62 @@ impl TryFrom<&str> for ParsedUri {
                 PUBLIC_PATH, segments[0], uri
             ));
         }
-        if segments[1] != APP_PATH.trim_matches('/') {
-            return Err(format!(
-                "Expected app path '{}' but got '{}' in URI: {}",
-                APP_PATH, segments[1], uri
-            ));
-        }
-
-        // 4. Determine the resource from the remaining segments.
-        let resource = match segments[2..] {
-            // No extra segments.
-            [] => Resource::Unknown,
-            // A single segment: must exactly match an identifier-less route.
-            [segment] => match segment {
-                PubkyAppUser::PATH_SEGMENT => Resource::User,
-                PubkyAppLastRead::PATH_SEGMENT => Resource::LastRead,
-                _ => Resource::Unknown,
-            },
-            // Two or more segments and the id is not empty.
-            [res_type, id, ..] if !id.is_empty() => {
-                let resource_type = format!("{}/", res_type);
-                match resource_type.as_str() {
-                    PubkyAppPost::PATH_SEGMENT => Resource::Post(id.to_string()),
-                    PubkyAppFollow::PATH_SEGMENT => PubkyId::try_from(id).map(Resource::Follow)?,
-                    PubkyAppMute::PATH_SEGMENT => PubkyId::try_from(id).map(Resource::Mute)?,
-                    PubkyAppBookmark::PATH_SEGMENT => Resource::Bookmark(id.to_string()),
-                    PubkyAppTag::PATH_SEGMENT => Resource::Tag(id.to_string()),
-                    PubkyAppFile::PATH_SEGMENT => Resource::File(id.to_string()),
-                    PubkyAppBlob::PATH_SEGMENT => Resource::Blob(id.to_string()),
-                    PubkyAppFeed::PATH_SEGMENT => Resource::Feed(id.to_string()),
+        // 4. Check if this is a standard pubky.app URI or a universal tag URI from another app.
+        if segments[1] == APP_PATH.trim_matches('/') {
+            // Standard AppSpec parsing
+            let resource = match segments[2..] {
+                // No extra segments.
+                [] => Resource::Unknown,
+                // A single segment: must exactly match an identifier-less route.
+                [segment] => match segment {
+                    PubkyAppUser::PATH_SEGMENT => Resource::User,
+                    PubkyAppLastRead::PATH_SEGMENT => Resource::LastRead,
                     _ => Resource::Unknown,
+                },
+                // Two or more segments and the id is not empty.
+                [res_type, id, ..] if !id.is_empty() => {
+                    let resource_type = format!("{}/", res_type);
+                    match resource_type.as_str() {
+                        PubkyAppPost::PATH_SEGMENT => Resource::Post(id.to_string()),
+                        PubkyAppFollow::PATH_SEGMENT => {
+                            PubkyId::try_from(id).map(Resource::Follow)?
+                        }
+                        PubkyAppMute::PATH_SEGMENT => PubkyId::try_from(id).map(Resource::Mute)?,
+                        PubkyAppBookmark::PATH_SEGMENT => Resource::Bookmark(id.to_string()),
+                        PubkyAppTag::PATH_SEGMENT => Resource::Tag(id.to_string()),
+                        PubkyAppFile::PATH_SEGMENT => Resource::File(id.to_string()),
+                        PubkyAppBlob::PATH_SEGMENT => Resource::Blob(id.to_string()),
+                        PubkyAppFeed::PATH_SEGMENT => Resource::Feed(id.to_string()),
+                        _ => Resource::Unknown,
+                    }
                 }
-            }
-            // If the identifier is empty or doesn't match the expected pattern.
-            _ => Resource::Unknown,
-        };
+                // If the identifier is empty or doesn't match the expected pattern.
+                _ => Resource::Unknown,
+            };
 
-        Ok(ParsedUri { user_id, resource })
+            Ok(ParsedUri::AppSpec { user_id, resource })
+        } else {
+            // Check for universal tag pattern: pubky://<user_id>/pub/<app>/tags/<tag_id>
+            let app = segments[1].to_string();
+            if segments.len() >= 4
+                && segments[2] == PubkyAppTag::PATH_SEGMENT.trim_end_matches('/')
+                && !segments[3].is_empty()
+            {
+                let tag_id = segments[3].to_string();
+                let resource = Resource::Tag(tag_id.clone());
+                Ok(ParsedUri::UniversalTag {
+                    user_id,
+                    app,
+                    resource,
+                    tag_id,
+                })
+            } else {
+                Err(format!(
+                    "Unrecognized URI pattern for app '{}' in URI: {}",
+                    app, uri
+                ))
+            }
+        }
     }
 }
 
@@ -192,7 +261,7 @@ mod tests {
         let uri = bookmark_uri_builder(USER_ID.into(), "".into());
         let parsed_uri = ParsedUri::try_from(uri).unwrap_or_default();
         assert_eq!(
-            parsed_uri.resource,
+            *parsed_uri.resource(),
             Resource::Unknown,
             "The provided URI has bookmark_id"
         );
@@ -203,7 +272,7 @@ mod tests {
         let uri = bookmark_uri_builder(USER_ID.into(), "00".into());
         let parsed_uri = ParsedUri::try_from(uri).unwrap_or_default();
         assert_eq!(
-            parsed_uri.resource,
+            *parsed_uri.resource(),
             Resource::Bookmark("00".to_string()),
             "The provided URI has wrong id"
         );
@@ -214,7 +283,7 @@ mod tests {
         let uri = user_uri_builder(USER_ID.into());
         let parsed_uri = ParsedUri::try_from(uri).unwrap_or_default();
         assert_eq!(
-            parsed_uri.resource,
+            *parsed_uri.resource(),
             Resource::User,
             "The provided URI is not user resource type"
         );
@@ -229,13 +298,13 @@ mod tests {
         // A valid user URI ends with profile.json.
         let uri = user_uri_builder(USER_ID.into());
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse valid user URI");
-        assert_eq!(parsed.user_id, user_id);
-        assert_eq!(parsed.resource, Resource::User);
+        assert_eq!(*parsed.user_id(), user_id);
+        assert_eq!(*parsed.resource(), Resource::User);
 
         // Repeat same checks for ParsedUri derived directly from PubkyId
         let parsed_uri_from_pubky_id = user_id.to_uri();
-        assert_eq!(parsed_uri_from_pubky_id.user_id, user_id);
-        assert_eq!(parsed_uri_from_pubky_id.resource, Resource::User);
+        assert_eq!(*parsed_uri_from_pubky_id.user_id(), user_id);
+        assert_eq!(*parsed_uri_from_pubky_id.resource(), Resource::User);
     }
 
     #[test]
@@ -243,8 +312,8 @@ mod tests {
         // A valid last_read URI ends with last_read.
         let uri = last_read_uri_builder(USER_ID.into());
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse valid last_read URI");
-        assert_eq!(parsed.user_id, PubkyId::try_from(USER_ID).unwrap());
-        assert_eq!(parsed.resource, Resource::LastRead);
+        assert_eq!(*parsed.user_id(), PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.resource(), Resource::LastRead);
     }
 
     #[test]
@@ -252,8 +321,8 @@ mod tests {
         // A valid post URI includes the posts/ segment followed by an identifier.
         let uri = post_uri_builder(USER_ID.into(), "0032SSN7Q4EVG".into());
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse valid post URI");
-        assert_eq!(parsed.user_id, PubkyId::try_from(USER_ID).unwrap());
-        assert_eq!(parsed.resource, Resource::Post("0032SSN7Q4EVG".to_string()));
+        assert_eq!(*parsed.user_id(), PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.resource(), Resource::Post("0032SSN7Q4EVG".to_string()));
     }
 
     #[test]
@@ -261,10 +330,10 @@ mod tests {
         // A valid follow URI.
         let uri = follow_uri_builder(USER_ID.into(), USER_ID.into());
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse valid follow URI");
-        assert_eq!(parsed.user_id, PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.user_id(), PubkyId::try_from(USER_ID).unwrap());
         // Assuming PubkyId::try_from("def456") returns a PubkyId that equals PubkyId::try_from("def456")
         assert_eq!(
-            parsed.resource,
+            *parsed.resource(),
             Resource::Follow(PubkyId::try_from(USER_ID).unwrap())
         );
     }
@@ -274,17 +343,17 @@ mod tests {
         let bookmark_id = "8Z8CWH8NVYQY39ZEBFGKQWWEKG";
         let uri = bookmark_uri_builder(USER_ID.into(), bookmark_id.into());
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse valid bookmark URI");
-        assert_eq!(parsed.user_id, PubkyId::try_from(USER_ID).unwrap());
-        assert_eq!(parsed.resource, Resource::Bookmark(bookmark_id.to_string()));
+        assert_eq!(*parsed.user_id(), PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.resource(), Resource::Bookmark(bookmark_id.to_string()));
     }
 
     #[test]
     fn test_valid_tag_uri() {
         let uri = tag_uri_builder(USER_ID.into(), "8Z8CWH8NVYQY39ZEBFGKQWWEKG".into());
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse valid tag URI");
-        assert_eq!(parsed.user_id, PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.user_id(), PubkyId::try_from(USER_ID).unwrap());
         assert_eq!(
-            parsed.resource,
+            *parsed.resource(),
             Resource::Tag("8Z8CWH8NVYQY39ZEBFGKQWWEKG".to_string())
         );
     }
@@ -293,17 +362,17 @@ mod tests {
     fn test_valid_file_uri() {
         let uri = file_uri_builder(USER_ID.into(), "file003".into());
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse valid file URI");
-        assert_eq!(parsed.user_id, PubkyId::try_from(USER_ID).unwrap());
-        assert_eq!(parsed.resource, Resource::File("file003".to_string()));
+        assert_eq!(*parsed.user_id(), PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.resource(), Resource::File("file003".to_string()));
     }
 
     #[test]
     fn test_valid_blob_uri() {
         let uri = blob_uri_builder(USER_ID.into(), "8Z8CWH8NVYQY39ZEBFGKQWWEKG".into());
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse valid blob URI");
-        assert_eq!(parsed.user_id, PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.user_id(), PubkyId::try_from(USER_ID).unwrap());
         assert_eq!(
-            parsed.resource,
+            *parsed.resource(),
             Resource::Blob("8Z8CWH8NVYQY39ZEBFGKQWWEKG".to_string())
         );
     }
@@ -312,9 +381,9 @@ mod tests {
     fn test_valid_feed_uri() {
         let uri = feed_uri_builder(USER_ID.into(), "8Z8CWH8NVYQY39ZEBFGKQWWEKG".into());
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse valid feed URI");
-        assert_eq!(parsed.user_id, PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.user_id(), PubkyId::try_from(USER_ID).unwrap());
         assert_eq!(
-            parsed.resource,
+            *parsed.resource(),
             Resource::Feed("8Z8CWH8NVYQY39ZEBFGKQWWEKG".to_string())
         );
     }
@@ -326,8 +395,8 @@ mod tests {
         let uri = format!("pubky://{USER_ID}/pub/pubky.app/");
         let parsed =
             ParsedUri::try_from(uri).expect("Failed to parse URI with no resource segments");
-        assert_eq!(parsed.user_id, PubkyId::try_from(USER_ID).unwrap());
-        assert_eq!(parsed.resource, Resource::Unknown);
+        assert_eq!(*parsed.user_id(), PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.resource(), Resource::Unknown);
     }
 
     #[test]
@@ -335,8 +404,8 @@ mod tests {
         // Unknown resource type yields Resource::Unknown.
         let uri = format!("pubky://{USER_ID}/pub/pubky.app/unknown/xyz");
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse URI with unknown resource");
-        assert_eq!(parsed.user_id, PubkyId::try_from(USER_ID).unwrap());
-        assert_eq!(parsed.resource, Resource::Unknown);
+        assert_eq!(*parsed.user_id(), PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.resource(), Resource::Unknown);
     }
 
     // Failure cases
@@ -502,11 +571,69 @@ mod tests {
     fn test_unknown_resource_to_uri_str_fails() {
         let uri = format!("pubky://{USER_ID}/pub/pubky.app/unknown/xyz");
         let parsed = ParsedUri::try_from(uri).expect("Failed to parse URI with unknown resource");
-        assert_eq!(parsed.resource, Resource::Unknown);
+        assert_eq!(*parsed.resource(), Resource::Unknown);
         let result = parsed.try_to_uri_str();
         assert!(
             result.is_err(),
             "Unknown resource should fail to convert to URI string"
         );
+    }
+
+    // Universal tag URI tests
+
+    #[test]
+    fn test_universal_tag_uri() {
+        let uri = format!("pubky://{USER_ID}/pub/other.app/tags/SOMETAG123");
+        let parsed = ParsedUri::try_from(uri).expect("Failed to parse universal tag URI");
+        assert_eq!(parsed.user_id(), &PubkyId::try_from(USER_ID).unwrap());
+        assert_eq!(*parsed.resource(), Resource::Tag("SOMETAG123".to_string()));
+        match &parsed {
+            ParsedUri::UniversalTag {
+                app,
+                tag_id,
+                ..
+            } => {
+                assert_eq!(app, "other.app");
+                assert_eq!(tag_id, "SOMETAG123");
+            }
+            _ => panic!("Expected UniversalTag variant"),
+        }
+    }
+
+    #[test]
+    fn test_universal_tag_uri_roundtrip() {
+        let uri = format!("pubky://{USER_ID}/pub/other.app/tags/SOMETAG123");
+        let parsed = ParsedUri::try_from(uri.clone()).expect("Failed to parse universal tag URI");
+        let reconstructed = parsed
+            .try_to_uri_str()
+            .expect("Failed to convert universal tag to URI string");
+        assert_eq!(
+            uri, reconstructed,
+            "Universal tag URI roundtrip failed"
+        );
+    }
+
+    #[test]
+    fn test_universal_tag_non_tag_resource_fails() {
+        // A non-pubky.app URI with a resource that is NOT tags/ should fail
+        let uri = format!("pubky://{USER_ID}/pub/other.app/posts/POST123");
+        let result = ParsedUri::try_from(uri);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_universal_tag_empty_tag_id_fails() {
+        // A universal tag URI with an empty tag_id should fail
+        let uri = format!("pubky://{USER_ID}/pub/other.app/tags/");
+        let result = ParsedUri::try_from(uri);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_universal_tag_no_tag_id_fails() {
+        // A universal tag URI with no tag_id segment should fail
+        let uri = format!("pubky://{USER_ID}/pub/other.app/tags");
+        let result = ParsedUri::try_from(uri);
+        assert!(result.is_err());
     }
 }

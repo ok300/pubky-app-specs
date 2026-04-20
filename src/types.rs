@@ -35,7 +35,7 @@ impl PubkyId {
     }
 
     pub fn to_uri(&self) -> ParsedUri {
-        ParsedUri {
+        ParsedUri::AppSpec {
             user_id: self.clone(),
             resource: Resource::User,
         }

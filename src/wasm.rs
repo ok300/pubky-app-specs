@@ -494,8 +494,8 @@ pub fn parse_uri(uri: &str) -> Result<ParsedUriResult, String> {
 
     // Build and return the strongly typed result.
     Ok(ParsedUriResult {
-        user_id: parsed.user_id.to_string(),
-        resource: parsed.resource.to_string(),
-        resource_id: parsed.resource.id(),
+        user_id: parsed.user_id().to_string(),
+        resource: parsed.resource().to_string(),
+        resource_id: parsed.resource().id(),
     })
 }
