@@ -342,10 +342,11 @@ impl TryFrom<&str> for ParsedUriV2 {
             match segments[2..] {
                 [res_type, tag_id, ..] if !tag_id.is_empty() && res_type == "tags" => {
                     let tag_id = tag_id.to_string();
+                    let resource = Resource::Tag(tag_id.clone());
                     Ok(ParsedUriV2::UniversalTag {
                         user_id,
                         app: app_segment.to_string(),
-                        resource: Resource::Tag(tag_id.clone()),
+                        resource,
                         tag_id,
                     })
                 }
